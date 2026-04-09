@@ -299,7 +299,7 @@ function hideReconnUI(){document.getElementById('reconn').style.display='none'}
 function backToLobby(){
   document.getElementById('disco').style.display='none';document.getElementById('lobby').style.display='flex';
   reconnecting=false;stopHeartbeat();
-  if(peer){try{peer.destroy()}catch(e){}}peer=null;conn=null;mode='local';state='lobby';gameStarted=false;prevNetState=null;prevSentState=null;stateBuffer=[];showPanel('lm');
+  if(peer){try{peer.destroy()}catch(e){}}peer=null;conn=null;mode='local';state='lobby';gameStarted=false;prevNetState=null;prevSentState=null;stateBuffer=[];guestFullState=null;guestRenderState=null;showPanel('lm');
 }
 
 // === HEARTBEAT & RTT ===
@@ -345,12 +345,18 @@ function handleData(d){
   if(d.type==='pong'){rtt=Date.now()-d.t;lastPongTime=Date.now();connQuality=rtt<30?4:rtt<80?3:rtt<150?2:1;return}
   if(d.type==='input'){remoteKeys=d.keys;return}
   if(d.type==='state'){
-    lastPongTime=Date.now(); // state도 keepalive로 카운트
+    lastPongTime=Date.now();
     var full=d.full!==false;
-    var stateData=full?d.data:applyDelta(d.data);
+    var stateData;
+    if(full){
+      stateData=d.data;
+      guestFullState=JSON.parse(JSON.stringify(stateData));
+    }else{
+      if(!guestFullState)return; // 풀 스테이트 전에 delta 무시
+      stateData=applyDelta(d.data);
+    }
     guestDetectEffects(stateData);
-    // 보간 버퍼에 추가
-    stateBuffer.push({data:stateData,time:Date.now()});
+    stateBuffer.push({data:JSON.parse(JSON.stringify(stateData)),time:Date.now()});
     if(stateBuffer.length>4)stateBuffer.shift();
     return;
   }
@@ -420,27 +426,30 @@ function getSendInterval(){
 }
 
 // === GUEST INTERPOLATION ===
+var guestRenderState=null; // 현재 렌더링 중인 상태
 function interpolateForGuest(){
-  if(stateBuffer.length<2){
-    // 버퍼 부족 → 최신 상태 직접 적용
-    if(stateBuffer.length===1)deserializeState(stateBuffer[0].data);
+  if(stateBuffer.length===0)return;
+  var latest=stateBuffer[stateBuffer.length-1].data;
+  if(!guestRenderState){
+    // 첫 상태 → 즉시 적용
+    guestRenderState=JSON.parse(JSON.stringify(latest));
+    deserializeState(latest);
     return;
   }
-  var now=Date.now()-interpDelay;
-  var a=null,b=null;
-  for(var i=0;i<stateBuffer.length-1;i++){
-    if(stateBuffer[i].time<=now&&stateBuffer[i+1].time>=now){
-      a=stateBuffer[i];b=stateBuffer[i+1];break;
-    }
-  }
-  if(!a||!b){
-    // 범위 밖 → 최신 적용
-    deserializeState(stateBuffer[stateBuffer.length-1].data);
-    return;
-  }
-  var t=(now-a.time)/(b.time-a.time);
-  t=Math.max(0,Math.min(1,t));
-  lerpState(a.data,b.data,t);
+  // 최신 서버 상태를 향해 lerp (0.35 = 부드러우면서도 빠르게 수렴)
+  var blend=0.35;
+  lerpState(guestRenderState,latest,blend);
+  // 렌더 상태 업데이트 (현재 보간된 위치 저장)
+  guestRenderState=snapshotCurrent();
+}
+function snapshotCurrent(){
+  return{
+    p:players.map(function(p){return{x:p.x,y:p.y,vx:p.vx,vy:p.vy,f:p.facing,g:p.grounded,sc:p.score,
+      ch:p.charging,ct:p.chargeTime,st:p.stamina,sp:p.sprinting,bl:p.blocking,bt:p.blockTimer,
+      ls:p.landSquish,td:p.throwCD,bc:p.blockCD,jh:p.jumpHeld,cf:p.coyoteFrames,sd:p.staminaDepleted}}),
+    b:{x:ball.x,y:ball.y,vx:ball.vx,vy:ball.vy,o:ball.owner,r:ball.rotation,py:ball.prevY,cd:ball.cooldown,lt:ball.lastThrower},
+    s:state,ft:freezeTimer,mt:msgText,mc:msgColor,mi:msgTimer,ms:msgScale,fa:flashAlpha,w:winner,sm:slowMo
+  };
 }
 function lerpVal(a,b,t){return a+(b-a)*t}
 function lerpState(a,b,t){
@@ -460,10 +469,8 @@ function lerpState(a,b,t){
   ball.vx=lerpVal(a.b.vx,b.b.vx,t);ball.vy=lerpVal(a.b.vy,b.b.vy,t);
   ball.owner=b.b.o;ball.rotation=lerpVal(a.b.r,b.b.r,t);
   ball.prevY=b.b.py;ball.cooldown=b.b.cd;ball.lastThrower=b.b.lt;
-  // 게임 상태 (보간 불가 — 최신)
+  // 게임 상태 (보간 불가 — 최신 즉시 적용)
   state=b.s;freezeTimer=b.ft;msgText=b.mt;msgColor=b.mc;msgTimer=b.mi;msgScale=b.ms;flashAlpha=b.fa;winner=b.w;slowMo=b.sm;
-  // 풀 스테이트 캐시 업데이트
-  guestFullState=JSON.parse(JSON.stringify(b));
 }
 (function(){var p=new URLSearchParams(location.search).get('room');if(p)document.getElementById('ri').value=p.toUpperCase()})();
 
