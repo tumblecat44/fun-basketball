@@ -165,8 +165,8 @@ function updateShake(){
 }
 
 var HOOPS=[
-  {side:'left',bbX:32,bbW:8,bbTop:155,bbBot:235,rimL:40,rimR:92,rimY:195,pointsToPlayer:1,poleX:36},
-  {side:'right',bbX:W-40,bbW:8,bbTop:155,bbBot:235,rimL:W-92,rimR:W-40,rimY:195,pointsToPlayer:0,poleX:W-40}
+  {side:'left',bbX:32,bbW:8,bbTop:120,bbBot:235,rimL:40,rimR:92,rimY:195,pointsToPlayer:1,poleX:36},
+  {side:'right',bbX:W-40,bbW:8,bbTop:120,bbBot:235,rimL:W-92,rimR:W-40,rimY:195,pointsToPlayer:0,poleX:W-40}
 ];
 
 var ball={x:W/2,y:250,vx:0,vy:0,prevY:250,r:BALL_RADIUS,owner:-1,lastThrower:-1,cooldown:0,rotation:0,trail:[]};
@@ -592,8 +592,8 @@ function updateBall(){
   if(speed>4){ball.trail.push({x:ball.x,y:ball.y,life:1});if(ball.trail.length>8)ball.trail.shift()}
   for(var i=ball.trail.length-1;i>=0;i--){ball.trail[i].life-=0.12;if(ball.trail[i].life<=0)ball.trail.splice(i,1)}
   if(ball.y+ball.r>=FLOOR_Y){ball.y=FLOOR_Y-ball.r;ball.vy*=-BALL_BOUNCE;ball.vx*=0.92;if(Math.abs(ball.vy)<1.5)ball.vy=0;sfxBounce()}
-  if(ball.x-ball.r<5){ball.x=5+ball.r;ball.vx*=-0.7;sfxBounce()}
-  if(ball.x+ball.r>W-5){ball.x=W-5-ball.r;ball.vx*=-0.7;sfxBounce()}
+  if(ball.x-ball.r<5){ball.x=5+ball.r;ball.vx=0}
+  if(ball.x+ball.r>W-5){ball.x=W-5-ball.r;ball.vx=0}
   var hi,h;
   for(hi=0;hi<HOOPS.length;hi++){h=HOOPS[hi];
     if(ball.y>h.bbTop&&ball.y<h.bbBot){
