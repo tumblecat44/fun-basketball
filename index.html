@@ -158,14 +158,14 @@ function updateShake() {
 const HOOPS = [
   {
     side: 'left',
-    bbX: 32, bbW: 8, bbTop: 140, bbBot: 250,
+    bbX: 32, bbW: 8, bbTop: 155, bbBot: 235,
     rimL: 40, rimR: 92, rimY: 195,
     pointsToPlayer: 1,  // P2 scores when ball goes through
     poleX: 36
   },
   {
     side: 'right',
-    bbX: W - 40, bbW: 8, bbTop: 140, bbBot: 250,
+    bbX: W - 40, bbW: 8, bbTop: 155, bbBot: 235,
     rimL: W - 92, rimR: W - 40, rimY: 195,
     pointsToPlayer: 0,  // P1 scores when ball goes through
     poleX: W - 40
@@ -200,15 +200,23 @@ function makePlayer(id, x, color, light, ctrl, targetHoopIdx) {
     throwCD: 0,
     jumpHeld: false,
     landSquish: 0,
-    coyoteFrames: 0
+    coyoteFrames: 0,
+    charging: false,
+    chargeTime: 0,
+    stamina: 100,
+    sprinting: false,
+    staminaDepleted: false,
+    blocking: false,
+    blockTimer: 0,
+    blockCD: 0
   };
 }
 
 const players = [
   makePlayer(0, W * 0.3, '#4488FF', '#77BBFF',
-    { left: 'KeyA', right: 'KeyD', up: 'KeyW', down: 'KeyS', act: 'Space' }, 1),
+    { left: 'KeyA', right: 'KeyD', up: 'KeyW', down: 'KeyS', act: 'Space', sprint: 'ShiftLeft' }, 1),
   makePlayer(1, W * 0.7, '#FF4455', '#FF7788',
-    { left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown', act: 'Enter' }, 0)
+    { left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown', act: 'Enter', sprint: 'ShiftRight' }, 0)
 ];
 
 // ====================== GAME STATE ======================
@@ -260,7 +268,20 @@ function startGame() {
 // ====================== PLAYER UPDATE ======================
 function updatePlayer(p) {
   const c = p.ctrl;
-  const spd = (ball.owner === p.id) ? PLAYER_SPEED_HOLDING : PLAYER_SPEED;
+  const baseSpd = (ball.owner === p.id) ? PLAYER_SPEED_HOLDING : PLAYER_SPEED;
+  const moving = keys[c.left] || keys[c.right];
+
+  // -- Sprint --
+  if (p.stamina <= 0) p.staminaDepleted = true;
+  if (p.stamina >= 25) p.staminaDepleted = false;
+  p.sprinting = keys[c.sprint] && moving && p.grounded && !p.staminaDepleted;
+  if (p.sprinting) {
+    p.stamina = Math.max(0, p.stamina - 1.5);
+    if (frame % 4 === 0) emitParticles(p.x - p.facing * 12, FLOOR_Y - 3, 'rgba(255,255,200,0.5)', 2, 1.5);
+  } else {
+    p.stamina = Math.min(100, p.stamina + 0.6);
+  }
+  const spd = p.sprinting ? baseSpd * 1.6 : baseSpd;
 
   // -- Horizontal movement --
   if (keys[c.left]) { p.vx = -spd * (p.grounded ? 1 : 0.88); p.facing = -1; }
@@ -288,41 +309,82 @@ function updatePlayer(p) {
   // Fast fall
   if (p.vy > 0) p.vy += GRAVITY * 0.4;
 
-  // -- Throw / Dunk --
-  if (keys[c.act] && ball.owner === p.id && p.throwCD <= 0) {
+  // -- Charge / Throw / Dunk --
+  if (ball.owner !== p.id) { p.charging = false; p.chargeTime = 0; }
+
+  if (ball.owner === p.id && p.throwCD <= 0) {
     const th = HOOPS[p.targetHoop];
     const hoopCX = (th.rimL + th.rimR) / 2;
     const nearHoop = Math.abs(p.x - hoopCX) < 55 && p.y < th.rimY + 15;
 
-    if (nearHoop) {
-      // === DUNK ===
-      ball.x = hoopCX;
-      ball.y = th.rimY + 15;
-      ball.vx = 0;
-      ball.vy = 7;
-      ball.owner = -1;
-      ball.lastThrower = p.id;
-      ball.cooldown = 30;
+    if (keys[c.act]) {
+      if (nearHoop && !p.charging) {
+        // === INSTANT DUNK ===
+        ball.x = hoopCX;
+        ball.y = th.rimY + 15;
+        ball.vx = 0;
+        ball.vy = 7;
+        ball.owner = -1;
+        ball.lastThrower = p.id;
+        ball.cooldown = 30;
+        doScore(p.id, 2, 'SLAM DUNK! +2');
+        sfxDunk();
+        p.throwCD = 15;
+      } else if (!nearHoop) {
+        // === CHARGING (faster in air for jump shots) ===
+        p.charging = true;
+        p.chargeTime = Math.min(p.chargeTime + (p.grounded ? 1 : 2), 40);
+      }
+    } else if (p.charging) {
+      // === RELEASE: THROW ===
+      p.charging = false;
+      const pct = p.chargeTime / 40;
 
-      doScore(p.id, 2, 'SLAM DUNK! +2');
-      sfxDunk();
-    } else {
-      // === THROW ===
-      let aimX = p.facing;
-      let aimY = -0.55;
-      if (keys[c.up]) aimY = -1.0;
-      if (keys[c.down]) aimY = 0.25;
-      const mag = Math.sqrt(aimX * aimX + aimY * aimY);
-      ball.vx = (aimX / mag) * THROW_SPEED + p.vx * 0.3;
-      ball.vy = (aimY / mag) * THROW_SPEED;
-      ball.owner = -1;
-      ball.lastThrower = p.id;
-      ball.cooldown = GRAB_COOLDOWN;
-      sfxThrow();
+      if (nearHoop) {
+        ball.x = hoopCX;
+        ball.y = th.rimY + 15;
+        ball.vx = 0;
+        ball.vy = 7;
+        ball.owner = -1;
+        ball.lastThrower = p.id;
+        ball.cooldown = 30;
+        doScore(p.id, 2, 'SLAM DUNK! +2');
+        sfxDunk();
+      } else {
+        const aimX = p.facing;
+        const fullCharge = pct >= 0.95;
+        const aimY = fullCharge ? -3.0 : 0.3 - pct * 1.6; // full = rainbow arc (up강화)
+        const mag = Math.sqrt(aimX * aimX + aimY * aimY);
+        const tspd = fullCharge ? 17 : 8 + pct * 7; // full = 위로 세게, 앞으로는 약하게
+        ball.vx = (aimX / mag) * tspd + p.vx * 0.3;
+        ball.vy = (aimY / mag) * tspd;
+        ball.owner = -1;
+        ball.lastThrower = p.id;
+        ball.cooldown = GRAB_COOLDOWN;
+        if (fullCharge) {
+          addShake(6);
+          emitParticles(p.x + p.facing * 20, p.y + p.h * 0.3, '#FFD700', 12, 4);
+          playTone(400, 0.2, 'sine', 0.15);
+        }
+        sfxThrow();
+      }
+      p.chargeTime = 0;
+      p.throwCD = 15;
     }
-    p.throwCD = 15;
   }
   if (p.throwCD > 0) p.throwCD--;
+
+  // -- Block (action key without ball) --
+  if (ball.owner !== p.id && keys[c.act] && p.blockCD <= 0 && !p.blocking) {
+    p.blocking = true;
+    p.blockTimer = 20;
+    p.blockCD = 30;
+    if (p.grounded) { p.vy = -9; p.grounded = false; }
+    playTone(350, 0.06, 'square', 0.06);
+  }
+  if (p.blockTimer > 0) p.blockTimer--;
+  else p.blocking = false;
+  if (p.blockCD > 0) p.blockCD--;
 
   // -- Physics --
   p.vy += GRAVITY;
@@ -401,29 +463,27 @@ function updateBall() {
     sfxBounce();
   }
 
-  // Ceiling
-  if (ball.y - ball.r < CEILING_Y) {
-    ball.y = CEILING_Y + ball.r;
-    ball.vy *= -0.6;
-  }
+  // No ceiling — ball can fly off-screen (Smash Bros style)
 
   // Side walls
   if (ball.x - ball.r < 5) { ball.x = 5 + ball.r; ball.vx *= -0.7; sfxBounce(); }
   if (ball.x + ball.r > W - 5) { ball.x = W - 5 - ball.r; ball.vx *= -0.7; sfxBounce(); }
 
-  // Backboard collisions
+  // Backboard collisions — bounce outward + upward (no auto-funnel)
   for (const h of HOOPS) {
     if (ball.y > h.bbTop && ball.y < h.bbBot) {
       if (h.side === 'left') {
         if (ball.x - ball.r < h.bbX + h.bbW && ball.x + ball.r > h.bbX) {
           ball.x = h.bbX + h.bbW + ball.r;
-          ball.vx = Math.abs(ball.vx) * 0.6;
+          ball.vx = Math.abs(ball.vx) * 0.65 + 2.5;
+          ball.vy = ball.vy * 0.4 - 3;
           sfxBounce();
         }
       } else {
         if (ball.x + ball.r > h.bbX && ball.x - ball.r < h.bbX + h.bbW) {
           ball.x = h.bbX - ball.r;
-          ball.vx = -Math.abs(ball.vx) * 0.6;
+          ball.vx = -(Math.abs(ball.vx) * 0.65 + 2.5);
+          ball.vy = ball.vy * 0.4 - 3;
           sfxBounce();
         }
       }
@@ -451,6 +511,28 @@ function updateBall() {
     }
   }
 
+  // === BLOCK BODY DEFLECTION (always active, ignores cooldown) ===
+  for (const p of players) {
+    if (!p.blocking) continue;
+    // Blocking hitbox: wider + taller (arms up)
+    const bx1 = p.x - p.w / 2 - 8;
+    const bx2 = p.x + p.w / 2 + 8;
+    const by1 = p.y - 20;  // arms reach up
+    const by2 = p.y + p.h;
+    if (ball.x + ball.r > bx1 && ball.x - ball.r < bx2 &&
+        ball.y + ball.r > by1 && ball.y - ball.r < by2) {
+      const dx = ball.x - p.x;
+      const dy = ball.y - (p.y + p.h * 0.3);
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      ball.vx = (dx / dist) * 11;
+      ball.vy = (dy / dist) * 8 - 5;
+      ball.cooldown = 18;
+      addShake(5);
+      emitParticles(ball.x, ball.y, p.color, 10, 3);
+      playTone(300, 0.12, 'square', 0.12);
+    }
+  }
+
   // === SCORING DETECTION ===
   // Ball crossed rim line going downward, within horizontal bounds
   for (const h of HOOPS) {
@@ -464,15 +546,30 @@ function updateBall() {
     }
   }
 
-  // === PLAYER PICKUP ===
+  // === PLAYER PICKUP / BLOCK ===
   if (ball.cooldown <= 0) {
     for (const p of players) {
       const dx = ball.x - p.x;
-      const dy = ball.y - (p.y + p.h * 0.4);
-      if (Math.sqrt(dx * dx + dy * dy) < GRAB_DIST && ball.owner < 0) {
-        ball.owner = p.id;
-        ball.lastThrower = -1;
-        sfxGrab();
+      const grabY = p.blocking ? p.y - 5 : p.y + p.h * 0.4;
+      const dy = ball.y - grabY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const reach = p.blocking ? GRAB_DIST + 18 : GRAB_DIST;
+      if (dist < reach && ball.owner < 0) {
+        if (p.blocking) {
+          // BLOCK! Deflect the ball
+          const nx = dist > 0 ? dx / dist : 0;
+          const ny = dist > 0 ? dy / dist : -1;
+          ball.vx = nx * 12;
+          ball.vy = ny * 10 - 6;
+          ball.cooldown = 18;
+          addShake(5);
+          emitParticles(ball.x, ball.y, p.color, 10, 3);
+          playTone(300, 0.12, 'square', 0.12);
+        } else {
+          ball.owner = p.id;
+          ball.lastThrower = -1;
+          sfxGrab();
+        }
         break;
       }
     }
@@ -598,18 +695,28 @@ function drawHoop(h) {
   ctx.fillStyle = '#555';
   ctx.fillRect(h.poleX - 2, h.bbBot, 5, FLOOR_Y - h.bbBot);
 
-  // Backboard
-  ctx.fillStyle = '#EEE';
-  ctx.fillRect(h.bbX, h.bbTop, h.bbW, h.bbBot - h.bbTop);
-  ctx.strokeStyle = '#FF3333';
+  // Backboard - two tone (defender's team color)
+  const bbMid = h.rimY;
+  const defClr = h.pointsToPlayer === 1 ? '#4488FF' : '#FF4455';
+  ctx.fillStyle = '#F0F0F0';
+  ctx.fillRect(h.bbX, h.bbTop, h.bbW, bbMid - h.bbTop);
+  ctx.fillStyle = defClr;
+  ctx.fillRect(h.bbX, bbMid, h.bbW, h.bbBot - bbMid);
+  ctx.strokeStyle = '#333';
   ctx.lineWidth = 2;
   ctx.strokeRect(h.bbX, h.bbTop, h.bbW, h.bbBot - h.bbTop);
+  ctx.strokeStyle = '#FFF';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(h.bbX, bbMid);
+  ctx.lineTo(h.bbX + h.bbW, bbMid);
+  ctx.stroke();
 
   // Target square on backboard
   const sqSize = 24;
   const sqY = h.rimY - sqSize / 2;
   const sqX = h.side === 'left' ? h.bbX - 1 : h.bbX + h.bbW - sqSize + 1;
-  ctx.strokeStyle = '#FF3333';
+  ctx.strokeStyle = '#FFF';
   ctx.lineWidth = 1.5;
   ctx.strokeRect(sqX, sqY, sqSize, sqSize);
 
@@ -744,6 +851,23 @@ function drawPlayer(p) {
     ctx.moveTo(p.x - p.facing * 14, p.y + 22);
     ctx.lineTo(p.x - p.facing * 10, p.y + 32);
     ctx.stroke();
+  } else if (p.blocking) {
+    // Block pose - long arms straight up
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(p.x - 12, p.y + 22);
+    ctx.lineTo(p.x - 18, p.y - 18);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p.x + 12, p.y + 22);
+    ctx.lineTo(p.x + 18, p.y - 18);
+    ctx.stroke();
+    // Hands (bigger for block hitbox feel)
+    ctx.fillStyle = '#FFCC88';
+    ctx.beginPath();
+    ctx.arc(p.x - 18, p.y - 18, 5, 0, Math.PI * 2);
+    ctx.arc(p.x + 18, p.y - 18, 5, 0, Math.PI * 2);
+    ctx.fill();
   } else {
     const swing = p.grounded ? Math.sin(frame * 0.25 + p.id * 5) * (Math.abs(p.vx) > 1 ? 8 : 3) : -10;
     ctx.beginPath();
@@ -819,6 +943,84 @@ function drawBall() {
   drawBallBody(ball.x, ball.y, ball.r);
 }
 
+function drawChargeGauge() {
+  for (const p of players) {
+    if (!p.charging || ball.owner !== p.id) continue;
+    const pct = p.chargeTime / 40;
+    const gw = 44, gh = 6;
+    const gx = p.x - gw / 2;
+    const gy = p.y - 14;
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(gx - 1, gy - 1, gw + 2, gh + 2);
+
+    // Fill: green → yellow → red, flash white at full
+    const r = Math.floor(255 * Math.min(1, pct * 2));
+    const g = Math.floor(255 * Math.min(1, (1 - pct) * 2));
+    if (pct >= 0.95 && Math.sin(frame * 0.4) > 0) {
+      ctx.fillStyle = '#FFF';
+    } else {
+      ctx.fillStyle = `rgb(${r},${g},0)`;
+    }
+    ctx.fillRect(gx, gy, gw * pct, gh);
+
+    // Border
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(gx - 1, gy - 1, gw + 2, gh + 2);
+
+    // Aim direction arrow
+    const aimY = 0.3 - pct * 1.6;
+    const angle = Math.atan2(aimY, p.facing);
+    const arrowLen = 22;
+    const ax = p.x + p.facing * 24;
+    const ay = p.y + p.h * 0.3;
+    ctx.strokeStyle = `rgba(${r},${g},0,0.8)`;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax + Math.cos(angle) * arrowLen, ay + Math.sin(angle) * arrowLen);
+    ctx.stroke();
+    // Arrowhead
+    const ex = ax + Math.cos(angle) * arrowLen;
+    const ey = ay + Math.sin(angle) * arrowLen;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex + Math.cos(angle - 2.6) * 7, ey + Math.sin(angle - 2.6) * 7);
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex + Math.cos(angle + 2.6) * 7, ey + Math.sin(angle + 2.6) * 7);
+    ctx.stroke();
+  }
+}
+
+function drawStaminaGauge() {
+  for (const p of players) {
+    if (p.stamina >= 100) continue;
+    const gw = 30, gh = 4;
+    const gx = p.x - gw / 2;
+    const gy = p.y + p.h + 14;
+    const pct = p.stamina / 100;
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(gx, gy, gw, gh);
+
+    // Fill: cyan when high, yellow when medium, red when low
+    if (pct > 0.5) ctx.fillStyle = '#44DDFF';
+    else if (pct > 0.2) ctx.fillStyle = '#FFCC00';
+    else ctx.fillStyle = '#FF3333';
+    ctx.fillRect(gx, gy, gw * pct, gh);
+
+    // Label
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('RUN', p.x, gy + gh + 8);
+  }
+}
+
 function drawUI() {
   // Score display
   ctx.textAlign = 'center';
@@ -841,8 +1043,8 @@ function drawUI() {
   // Player labels
   ctx.font = '11px monospace';
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fillText('P1 [WASD+SPACE]', W / 2 - 55, 64);
-  ctx.fillText('P2 [Arrows+ENTER]', W / 2 + 55, 64);
+  ctx.fillText('P1 [WASD+SPACE+LSHIFT]', W / 2 - 70, 64);
+  ctx.fillText('P2 [Arrows+ENTER+RSHIFT]', W / 2 + 70, 64);
 
   // Win target
   ctx.fillStyle = 'rgba(255,255,255,0.2)';
@@ -866,15 +1068,26 @@ function drawUI() {
     ctx.restore();
   }
 
-  // Ball indicator (when ball is above screen)
-  if (ball.owner < 0 && ball.y < 30) {
+  // Ball indicator (Smash Bros style — when ball is above screen)
+  if (ball.owner < 0 && ball.y < 20) {
+    const dist = Math.min(1, Math.abs(ball.y) / 400);
+    const size = 6 + dist * 6;
+    const alpha = 0.5 + dist * 0.5;
+    ctx.globalAlpha = alpha;
+    // Arrow
     ctx.fillStyle = '#FF8833';
     ctx.beginPath();
-    ctx.moveTo(ball.x, 20);
-    ctx.lineTo(ball.x - 8, 8);
-    ctx.lineTo(ball.x + 8, 8);
+    ctx.moveTo(ball.x, 18);
+    ctx.lineTo(ball.x - size, 4);
+    ctx.lineTo(ball.x + size, 4);
     ctx.closePath();
     ctx.fill();
+    // Distance bar
+    ctx.fillStyle = '#FFF';
+    ctx.font = `bold ${10 + dist * 4 | 0}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.abs(ball.y | 0) + '↑', ball.x, 30);
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -905,18 +1118,21 @@ function drawTitle() {
   // Controls
   ctx.font = '15px monospace';
   ctx.fillStyle = players[0].color;
-  ctx.fillText('P1: WASD + SPACE', W / 2 - 160, H / 2 + 50);
+  ctx.fillText('P1: WASD + SPACE + L.SHIFT', W / 2 - 170, H / 2 + 50);
   ctx.fillStyle = players[1].color;
-  ctx.fillText('P2: Arrows + ENTER', W / 2 + 160, H / 2 + 50);
+  ctx.fillText('P2: Arrows + ENTER + R.SHIFT', W / 2 + 170, H / 2 + 50);
 
   // Rules
   ctx.fillStyle = '#666';
   ctx.font = '13px monospace';
   const rules = [
     'Walk into the ball to pick it up',
-    'Press action key to throw (aim with direction keys)',
+    'Hold action key to charge, release to throw!',
+    'Short tap = low shot, Long hold = high arc',
     'Dunk near the hoop for 2 points!',
+    'SHIFT to sprint (stamina gauge)',
     'Push opponents to steal the ball',
+    'Full charge = POWER SHOT for half-court!',
     `First to ${WIN_SCORE} wins`
   ];
   rules.forEach((r, i) => ctx.fillText(r, W / 2, H / 2 + 90 + i * 22));
@@ -1055,6 +1271,8 @@ function draw() {
   // Draw held ball on top
   if (ball.owner >= 0) drawBall();
 
+  drawChargeGauge();
+  drawStaminaGauge();
   drawParticles();
   drawUI();
   drawFlash();
